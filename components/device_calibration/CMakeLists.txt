@@ -1,0 +1,20 @@
+idf_component_register(
+    SRCS
+        "devcal_common.c"
+        "devcal_phase1.c"
+        "devcal_phase2.c"
+        "devcal_phase3.c"
+        "devcal_phase3c.c"
+        "devcal_phase4.c"
+        "devcal_phase5.c"
+        "device_cal.c"
+    INCLUDE_DIRS
+        "."
+        "../"
+    REQUIRES
+        freertos
+        driver
+        nvs_flash
+        lvgl
+        drivers
+)

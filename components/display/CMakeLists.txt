@@ -1,0 +1,17 @@
+idf_component_register(
+    SRCS
+        "ili9341_driver.c"
+        "xpt2046_driver.c"
+        "lvgl_port.c"
+        "touch_calibration.c"
+    INCLUDE_DIRS
+        "."
+        "../"
+    REQUIRES
+        freertos
+        driver
+        esp_timer
+        esp_common
+        lvgl
+        nvs_flash
+)
