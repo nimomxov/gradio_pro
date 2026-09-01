@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "author": "Gradiometer Pro",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "id": "esp",
+      "type": "esp32-devkitc-v2"
+    },
+    {
+      "id": "display",
+      "type": "ili9341",
+      "attrs": {
+        "width": "320",
+        "height": "240",
+        "rotation": "0",
+		"monitor": "true"
+      }
+    },
+    {
+      "id": "scan-btn",
+      "type": "pushbutton"
+    },
+    {
+      "id": "buzzer",
+      "type": "piezo-buzzer"
+    }
+  ],
+  "connections": [
+    ["esp:TX0", "$serialMonitor:RX", ""],
+    ["esp:RX0", "$serialMonitor:TX", ""],
+    ["esp:GND.1", "display:GND", "black"],
+    ["esp:3V3", "display:VCC", "yellow"],
+    ["esp:GPIO5", "display:CS", ""],
+    ["esp:GPIO18", "display:SCK", ""],
+    ["esp:GPIO23", "display:MOSI", ""],
+    ["esp:GPIO2", "display:DC", ""],
+    ["esp:GPIO4", "display:RST", ""],
+    ["esp:GPIO15", "display:LED", ""],
+    ["esp:GND.2", "scan-btn:GND", ""],
+    ["esp:GPIO16", "scan-btn:OUT", ""],
+    ["esp:GPIO26", "buzzer:IN", ""]
+  ]
+}

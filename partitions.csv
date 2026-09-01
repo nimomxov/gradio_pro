@@ -1,0 +1,20 @@
+# Gradiometer Pro v2.0 — Partition Table
+# Flash: 4MB (0x400000)
+#
+# | Name     | Type | SubType  | Offset   | Size    | Notes                        |
+# |----------|------|----------|----------|---------|------------------------------|
+# | nvs      | data | nvs      | 0x9000   | 0x6000  | NVS (24KB) — calib + prefs   |
+# | phy_init | data | phy      | 0xF000   | 0x1000  | PHY init data (4KB)          |
+# | factory  | app  | factory  | 0x10000  | 0x300000| App (3MB) — LVGL + EEZ heavy |
+# | storage  | data | spiffs   | 0x310000 | 0xF0000 | SPIFFS (960KB) — future use  |
+#
+# Notes:
+#  - factory app = 3MB يكفي لـ LVGL + EEZ images + كل المكونات
+#  - nvs 24KB يكفي لـ: calibration results + touch calibration + settings
+#  - spiffs محجوز للمستقبل (logs، firmware update، صور إضافية)
+
+# Name,   Type, SubType, Offset,   Size,    Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xF000,   0x1000,
+factory,  app,  factory, 0x10000,  0x300000,
+storage,  data, spiffs,  0x310000, 0xF0000,
