@@ -19,6 +19,7 @@
  */
 
 #include "signal_processor.h"
+#include "modes/sensitivity_manager.h"  /* SENS_MODE_INFO ? authoritative PGA/LSB table (Phase 1 #4b) */
 #include "esp_log.h"
 #include "esp_timer.h"
 #include <math.h>
@@ -158,6 +159,10 @@ void sp_init(SignalProcessor_t *sp)
     sp->ma_window      = sp->active_params.window_size;
     sp->alpha_ema      = sp->active_params.alpha_ema;
     sp->noise_variance = 1.0f;
+    /* Phase 1 #4b: driver boots at ADS1115_PGA_2048MV (MEDIUM) ? see
+     * ads1115_driver.c default. Track that as the scale all subsequent
+     * ADC-count state is expressed in, until a mode change moves it. */
+    sp->active_lsb_uv  = SENS_MODE_INFO[SENS_MODE_MEDIUM].lsb_uv;
     sp->kalman_enabled  = false;
     sp->spatial_enabled = false;
     sp->scan_mode            = false;
@@ -187,6 +192,10 @@ void sp_apply_calibration(SignalProcessor_t *sp, const CalibResult_t *result)
     sp->baseline_adaptive = result->mean;
     sp->baseline_slow     = result->mean;
     sp->noise_variance    = result->variance;
+    /* Phase 1 #4b: soil calibration (calib_engine.c) never touches PGA ?
+     * it always runs at the driver's default (MEDIUM). result->mean/variance
+     * are therefore expressed in MEDIUM's LSB scale. */
+    sp->active_lsb_uv     = SENS_MODE_INFO[SENS_MODE_MEDIUM].lsb_uv;
 
     sp->active_params = (SensParams_t){
         .window_size   = result->window_size,
@@ -275,6 +284,10 @@ void sp_apply_uncalibrated(SignalProcessor_t *sp)
     sp->baseline_fixed    = 0.0f;   /* placeholder ? overwritten after warmup */
     sp->baseline_adaptive = 0.0f;
     sp->baseline_slow     = 0.0f;
+    /* Phase 1 #4b: uncalibrated warmup also runs at the driver default PGA
+     * (MEDIUM is forced a few lines below and nothing changes PGA before
+     * this point), so the warmup-learned baseline is on that scale. */
+    sp->active_lsb_uv     = SENS_MODE_INFO[SENS_MODE_MEDIUM].lsb_uv;
 
     /* Warmup state */
     sp->uncalib_warmup_n    = 0u;
@@ -365,6 +378,35 @@ void sp_set_sensitivity(SignalProcessor_t *sp, SensitivityMode_t mode,
     } else {
         uint8_t idx = (uint8_t)mode;
         if (idx >= 6) idx = SENS_MODE_MEDIUM;
+
+        /* Phase 1 #4b ? PGA state coherence.
+         * SENS_MODE_INFO[idx].lsb_uv (modes/sensitivity_manager.c) is the
+         * single authoritative µV/LSB value per mode ? not duplicated here.
+         * If this mode's PGA differs from the PGA that the current
+         * ADC-count-scale state was captured under (sp->active_lsb_uv),
+         * rescale that state into the new domain first, so the PGA switch
+         * itself doesn't manufacture a false step.
+         * count = physical_volts / lsb_uv ? to keep physical_volts constant:
+         *   new_count = old_count * (old_lsb_uv / new_lsb_uv)
+         * Variance terms carry the squared ratio (they scale as count^2). */
+        {
+            float new_lsb_uv = SENS_MODE_INFO[idx].lsb_uv;
+            if (sp->active_lsb_uv > 0.0f && new_lsb_uv > 0.0f &&
+                fabsf(new_lsb_uv - sp->active_lsb_uv) > 1e-6f) {
+                float scale  = sp->active_lsb_uv / new_lsb_uv;
+                float scale2 = scale * scale;
+                sp->baseline_fixed    *= scale;
+                sp->baseline_adaptive *= scale;
+                sp->baseline_slow     *= scale;
+                sp->ema_output        *= scale;
+                sp->prev_output       *= scale;
+                sp->noise_variance    *= scale2;
+                sp->signal_variance   *= scale2;
+                ESP_LOGI(TAG, "PGA rescale: %.3f -> %.3f uV/LSB (x%.4f)",
+                         sp->active_lsb_uv, new_lsb_uv, scale);
+            }
+            sp->active_lsb_uv = new_lsb_uv;
+        }
 
         /* Save values that must NOT be overwritten by sensitivity change */
         float saved_ng     = sp->active_params.noise_gate;
@@ -827,6 +869,17 @@ bool sp_process(SignalProcessor_t *sp,
         const uint8_t WARMUP_N            = 100u;
         const uint8_t WARMUP_STAB_BYPASS  = 20u;   /* skip gate for first 20 samples */
 
+        /* BUGFIX (Phase 1 #3): stability_score is only ever advanced by
+         * update_stability(), which lives in the main pipeline below ?
+         * unreachable from this early-return warmup path. The gate below
+         * was therefore checking a score that could never leave 0.0f past
+         * sample 20, so warmup could never reach WARMUP_N and would stall
+         * forever. Reuse the SAME stability tracker (no second system) on
+         * the raw sample, before the gate decision, exactly like the main
+         * pipeline does with its filtered 'signal'. */
+        update_stability(sp, raw);
+        sp->prev_output = raw;
+
         bool accept_sample = (sp->uncalib_warmup_n < WARMUP_STAB_BYPASS) ||
                              (sp->stability_score  >= WARMUP_STABILITY_MIN);
 
@@ -834,9 +887,6 @@ bool sp_process(SignalProcessor_t *sp,
             sp->uncalib_warmup_sum += (double)raw;
             sp->uncalib_warmup_n++;
         }
-        /* Whether accepted or not ? always update stability tracker (uses raw) */
-        /* stability_score EMA is updated in stage 4 of main pipeline, but here
-         * we haven't run the pipeline yet. Use a lightweight inline approximation. */
 
         if (sp->uncalib_warmup_n >= WARMUP_N) {
             sp->uncalib_initial_mean = (float)(sp->uncalib_warmup_sum / (double)WARMUP_N);
@@ -851,6 +901,15 @@ bool sp_process(SignalProcessor_t *sp,
             sp->kf.x       = sp->uncalib_initial_mean;
             sp->kf.p       = 1.0f;
             sp->ema_output = sp->uncalib_initial_mean;
+
+            /* prev_output was being tracked in RAW (absolute ADC-count)
+             * terms during warmup (see update_stability(sp, raw) above),
+             * but from here on the main pipeline compares/seeds it in
+             * baseline-subtracted 'signal' terms (~0 right after this
+             * freeze). Reset it here so the very first post-warmup sample
+             * isn't compared against a stale ~raw-scale value and doesn't
+             * falsely read as unstable. */
+            sp->prev_output = 0.0f;
 
             ESP_LOGI(TAG, "Warmup done: initial_mean=%.2f (accepted=%u)",
                      sp->uncalib_initial_mean, sp->uncalib_warmup_n);
@@ -926,6 +985,13 @@ bool sp_process(SignalProcessor_t *sp,
     }
 
     update_stability(sp, signal);
+
+    /* BUGFIX (Phase 1 #2): prev_output was set at init but never updated
+     * afterwards, so update_stability() and the Kalman-reseed call sites
+     * (sp_set_sensitivity/sp_set_kalman/sp_set_spatial) always compared
+     * against / seeded from 0.0f. Store the same 'signal' value used for
+     * the stability comparison above so both consumers see real Δ. */
+    sp->prev_output = signal;
 
     /* -- Stage 5: Post-Kalman EMA (optional, mode-dependent) ------------
      * DeepSeek improvement ? reduce lag in high-sensitivity modes.
