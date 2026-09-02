@@ -398,10 +398,19 @@ void sp_set_sensitivity(SignalProcessor_t *sp, SensitivityMode_t mode,
                 sp->baseline_fixed    *= scale;
                 sp->baseline_adaptive *= scale;
                 sp->baseline_slow     *= scale;
-                sp->ema_output        *= scale;
+                sp->ema_output        *= scale;   /* unchanged: domain depends on active path, see below */
                 sp->prev_output       *= scale;
+                sp->prev_raw          *= scale;
+                sp->prev_filtered     *= scale;
+                sp->kf.x              *= scale;   /* Fix 2: absolute/gated ADC-count domain */
+                sp->bt_range_fixed    *= scale;   /* k * std_dev ? linear count domain */
                 sp->noise_variance    *= scale2;
                 sp->signal_variance   *= scale2;
+                sp->kf.r              *= scale2;  /* Fix 3: R = std_dev^2 (devcal_phase1/5.c) */
+                sp->calibrated_noise_var *= scale2; /* Fix 3: frozen copy of noise_variance ? must track it */
+                /* kf.q_base intentionally NOT rescaled: Q = (noise/range)^2 * 0.1
+                 * (devcal_phase2.c) ? a dimensionless ratio of two count-domain
+                 * quantities, the scale factor cancels out algebraically. */
                 ESP_LOGI(TAG, "PGA rescale: %.3f -> %.3f uV/LSB (x%.4f)",
                          sp->active_lsb_uv, new_lsb_uv, scale);
             }
@@ -433,8 +442,15 @@ void sp_set_sensitivity(SignalProcessor_t *sp, SensitivityMode_t mode,
          * and new window is smaller (e.g. 4), first output = 800/4 = 200
          * ? massive artificial spike ? crashes Kalman filter. */
         sp->ma_sum = 0.0f;
-        /* Seed Kalman with last known output to avoid jump */
-        sp->kf.x = sp->prev_output;
+        /* BUGFIX (Opus review, Fix 2): kf.x runs in the absolute/gated
+         * ADC-count domain (kf_step() is fed 'gated', pre-baseline-subtract)
+         * while prev_output is baseline-subtracted 'signal' domain (~0) ?
+         * seeding kf.x from prev_output was a domain error that would
+         * manufacture a large one-sample Kalman residual/step on the next
+         * measurement. kf.x is left as-is (already rescaled into the new
+         * PGA domain above, if the PGA changed); only inflate uncertainty
+         * so the filter re-converges quickly against the next real
+         * measurement, same as before. */
         sp->kf.p = 1.0f;   /* briefly increase uncertainty, re-converges fast */
 
         const char *names[] = {"AUTO","VERY_HIGH","HIGH","MEDIUM","LOW","VERY_LOW"};
@@ -449,7 +465,9 @@ void sp_set_kalman(SignalProcessor_t *sp, bool enable)
 {
     sp->kalman_enabled = enable;
     if (enable) {
-        sp->kf.x = sp->prev_output;
+        /* BUGFIX (Opus review, Fix 2): do not reseed kf.x from prev_output
+         * (wrong domain — see sp_set_sensitivity). Leave kf.x as its last
+         * absolute-domain value; only reset covariance so it reconverges. */
         sp->kf.p = 1.0f;
     } else {
         /* Disabling Kalman must also disable Spatial */
@@ -465,7 +483,8 @@ void sp_set_spatial(SignalProcessor_t *sp, bool enable)
         /* Spatial requires Kalman ? auto-enable */
         if (!sp->kalman_enabled) {
             sp->kalman_enabled = true;
-            sp->kf.x = sp->prev_output;
+            /* BUGFIX (Opus review, Fix 2): no prev_output reseed — wrong
+             * domain (see sp_set_sensitivity). Leave kf.x as-is. */
             sp->kf.p = 1.0f;
             ESP_LOGI(TAG, "Spatial: auto-enabled Kalman");
         }
