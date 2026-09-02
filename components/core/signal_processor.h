@@ -101,6 +101,13 @@ typedef struct {
     SensParams_t      active_params;
     SensitivityMode_t mode;
 
+    /* Phase 1 #4b: µV/LSB of the PGA setting that all ADC-count-scale
+     * state below (baseline_*, ema_output, prev_output, *_variance) is
+     * currently expressed in. Sourced from modes/sensitivity_manager.h's
+     * SENS_MODE_INFO — never duplicated/invented here. Used to rescale
+     * that state when a sensitivity change also changes hardware PGA. */
+    float    active_lsb_uv;
+
     float    prev_output;
     uint32_t sample_count;
     bool     calibrated;
