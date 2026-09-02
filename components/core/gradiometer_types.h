@@ -259,7 +259,10 @@ typedef struct {
  * ========================================================================= */
 
 #define QUEUE_DEPTH_ADC_SAMPLES     16u   /* raised from 4 ? prevents drops during UI spikes */
-#define QUEUE_DEPTH_PROCESSED       2u    /* UI needs only latest value */
+#define QUEUE_DEPTH_PROCESSED       1u    /* UI needs only latest value ?
+                                            * MUST be 1: qm_result_send_overwrite()
+                                            * uses xQueueOverwrite(), which is only
+                                            * well-defined on a length-1 queue. */
 #define QUEUE_DEPTH_EVENTS          12u   /* raised from 8 ? handles BT+BLE+button bursts */
 
 /* =========================================================================
