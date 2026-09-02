@@ -349,6 +349,22 @@ void sens_manager_auto_update(SensitivityManager_t *mgr,
 
     esp_err_t ret = apply_mode(mgr, target);
     if (ret == ESP_OK) {
+        /* BUGFIX (Opus review, Fix 1): apply_mode() unconditionally sets
+         * mgr->current_mode = the mode argument passed to it (correct for
+         * sens_manager_set_user/set_auto/apply_recommendation, where the
+         * caller-supplied mode IS the new current_mode). Here the argument
+         * is the AUTO engine's concrete internal target (e.g. HIGH), so
+         * apply_mode() was leaving current_mode = HIGH instead of AUTO ?
+         * the next call's `mgr->current_mode != SENS_MODE_AUTO` guard
+         * above would then reject forever, permanently freezing AUTO
+         * after its first internal transition.
+         * effective_mode already holds the concrete target (set by
+         * apply_mode() from its own local 'effective' calculation) ? that
+         * is the existing mechanism for tracking "what's actually applied"
+         * separately from "what mode is selected". Restore current_mode
+         * to AUTO here, still under the lock, so the two-layer model stays
+         * intact without a second state machine. */
+        mgr->current_mode     = SENS_MODE_AUTO;
         s_auto.last_applied   = target;
         s_auto.last_change_ms = now_ms;
     } else {
