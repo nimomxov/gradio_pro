@@ -355,7 +355,23 @@ void sens_manager_auto_update(SensitivityManager_t *mgr,
         ESP_LOGW(TAG, "AUTO engine: apply_mode failed: %s", esp_err_to_name(ret));
     }
 
-    xSemaphoreGive(mgr->lock);
+    xSemaphoreGive(mgr->lock);  /* FIX (Phase 1 #4a): release before event send ?
+                                 * same lock-order-inversion avoidance pattern used
+                                 * by apply_recommendation/set_user/set_auto below. */
+
+    /* BUGFIX (Phase 1 #4a): unlike apply_recommendation/set_user/set_auto,
+     * this internal AUTO-engine transition never told signal_task about the
+     * new effective mode. PGA hardware was switched by apply_mode() above,
+     * but sp_set_sensitivity() was never called ? DSP filter params AND the
+     * ADC-count baseline scale (Phase 1 #4b) stayed pinned to the previous
+     * mode for the rest of the AUTO session. Send the same event the other
+     * three callers send, using the identical pattern. */
+    if (ret == ESP_OK) {
+        bool sent = qm_event_send(SYS_EVT_SENS_CHANGE, (uint32_t)target);
+        if (!sent) {
+            ESP_LOGW(TAG, "AUTO engine: event queue full — sensitivity event delayed");
+        }
+    }
 }
 
 /* =========================================================================
